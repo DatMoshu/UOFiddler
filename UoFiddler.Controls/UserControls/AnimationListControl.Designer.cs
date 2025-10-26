@@ -85,7 +85,10 @@ namespace UoFiddler.Controls.UserControls
             tryToFindNewGraphicsToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             animationEditToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             GraphicLabel = new System.Windows.Forms.ToolStripStatusLabel();
-            BaseGraphicLabel = new System.Windows.Forms.ToolStripStatusLabel();
+            BaseGraphicLabel = new System.Windows.Forms.ToolStripStatusLabel(); 
+            this.packFramesToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.unpackFramesToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+
             HueLabel = new System.Windows.Forms.ToolStripStatusLabel();
             ((System.ComponentModel.ISupportInitialize)splitContainer1).BeginInit();
             splitContainer1.Panel1.SuspendLayout();
@@ -273,7 +276,7 @@ namespace UoFiddler.Controls.UserControls
             // 
             // extractAnimationToolStripMenuItem
             // 
-            extractAnimationToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { asBmpToolStripMenuItem1, asTiffToolStripMenuItem1, asJpgToolStripMenuItem1, asPngToolStripMenuItem1, asAnimatedGifToolStripMenuItem, asAnimatedGifnoLoopingToolStripMenuItem });
+            extractAnimationToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { asBmpToolStripMenuItem1, asTiffToolStripMenuItem1, asJpgToolStripMenuItem1, asPngToolStripMenuItem1, asAnimatedGifToolStripMenuItem, asAnimatedGifnoLoopingToolStripMenuItem, new System.Windows.Forms.ToolStripSeparator(), this.packFramesToolStripMenuItem, this.unpackFramesToolStripMenuItem });
             extractAnimationToolStripMenuItem.Name = "extractAnimationToolStripMenuItem";
             extractAnimationToolStripMenuItem.Size = new System.Drawing.Size(173, 22);
             extractAnimationToolStripMenuItem.Text = "Export Animation..";
@@ -556,7 +559,19 @@ namespace UoFiddler.Controls.UserControls
             HueLabel.RightToLeft = System.Windows.Forms.RightToLeft.No;
             HueLabel.Size = new System.Drawing.Size(32, 17);
             HueLabel.Text = "Hue:";
-            HueLabel.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
+            HueLabel.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;            
+            // 
+            // packFramesToolStripMenuItem
+            // 
+            this.packFramesToolStripMenuItem.Name = "packFramesToolStripMenuItem";
+            this.packFramesToolStripMenuItem.Size = new System.Drawing.Size(221, 22);
+            this.packFramesToolStripMenuItem.Text = "Pack Frames to JSON/PNG";
+            // 
+            // unpackFramesToolStripMenuItem
+            // 
+            this.unpackFramesToolStripMenuItem.Name = "unpackFramesToolStripMenuItem";
+            this.unpackFramesToolStripMenuItem.Size = new System.Drawing.Size(221, 22);
+            this.unpackFramesToolStripMenuItem.Text = "Unpack Frames from JSON";
             // 
             // AnimationListControl
             // 
@@ -641,5 +656,7 @@ namespace UoFiddler.Controls.UserControls
         private System.Windows.Forms.CheckBox AnimateCheckBox;
         private System.Windows.Forms.CheckBox ShowFrameBoundsCheckBox;
         private System.Windows.Forms.Label directionLabel;
+        private System.Windows.Forms.ToolStripMenuItem packFramesToolStripMenuItem;
+        private System.Windows.Forms.ToolStripMenuItem unpackFramesToolStripMenuItem;
     }
 }

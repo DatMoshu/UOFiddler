@@ -18,6 +18,8 @@ using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 using System.Xml;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Ultima;
 using UoFiddler.Controls.Classes;
 using UoFiddler.Controls.Forms;
@@ -34,7 +36,11 @@ namespace UoFiddler.Controls.UserControls
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
             // TODO can this be moved into the control itself?
             listView1.Height += SystemInformation.HorizontalScrollBarHeight;
+            // Add handlers for new context menu items
+            packFramesToolStripMenuItem.Click += OnPackFramesClick;
+            unpackFramesToolStripMenuItem.Click += OnUnpackFramesClick;
         }
+
 
         public string[][] GetActionNames { get; } = {
             // Monster
@@ -945,57 +951,433 @@ namespace UoFiddler.Controls.UserControls
             MainPictureBox.ShowFrameBounds = !MainPictureBox.ShowFrameBounds;
             ShowFrameBoundsCheckBox.Checked = MainPictureBox.ShowFrameBounds;
         }
-    }
 
-    public class AlphaSorter : IComparer
-    {
-        public int Compare(object x, object y)
+        private async void OnPackFramesClick(object? sender, EventArgs e)
         {
-            TreeNode tx = x as TreeNode;
-            TreeNode ty = y as TreeNode;
-            if (tx.Parent == null) // don't change Mob and Equipment
+            if (_currentSelect == 0)
             {
-                return (int)tx.Tag == -1 ? -1 : 1;
-            }
-            if (tx.Parent.Parent != null)
-            {
-                return (int)tx.Tag - (int)ty.Tag;
+                MessageBox.Show("No graphic selected.", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
             }
 
-            return string.CompareOrdinal(tx.Text, ty.Text);
+            // show pack options dialog
+            using var optionsForm = new PackOptionsForm();
+            if (optionsForm.ShowDialog() != DialogResult.OK)
+            {
+                return;
+            }
+
+            var selectedDirections = optionsForm.SelectedDirections; // list<int>
+            int maxWidth = optionsForm.MaxWidth;
+
+             // Ask for output base name/location
+             using (var dlg = new FolderBrowserDialog())
+             {
+                 dlg.Description = "Select folder to save packed sprite and JSON";
+                 dlg.ShowNewFolderButton = true;
+                 if (dlg.ShowDialog() != DialogResult.OK)
+                 {
+                     return;
+                 }
+
+                 string outDir = dlg.SelectedPath;
+
+                 try
+                 {
+                     Cursor.Current = Cursors.WaitCursor;
+
+                     // Collect frames for directions 0..4 (common editable directions)
+                     var packedFrames = new List<PackedFrameEntry>();
+
+                     int body = _currentSelect;
+                     Animations.Translate(ref body);
+                     int hue = 0; // do not preserve hue here
+
+                     var images = new List<Bitmap>();
+
+                     int currentX = 0, currentY = 0, rowHeight = 0, canvasWidth = 0, canvasHeight = 0;
+
+                     foreach (int dir in selectedDirections)
+                     {
+                         int localHue = 0;
+                         var frames = Animations.GetAnimation(_currentSelect, _currentSelectAction, dir, ref localHue, false, false);
+                         if (frames == null || frames.Length == 0)
+                         {
+                             continue;
+                         }
+
+                         for (int fi = 0; fi < frames.Length; fi++)
+                         {
+                             var anim = frames[fi];
+                             if (anim?.Bitmap == null)
+                             {
+                                 continue;
+                             }
+
+                             // determine size
+                             int w = anim.Bitmap.Width;
+                             int h = anim.Bitmap.Height;
+
+                             if (currentX + w > maxWidth)
+                             {
+                                 currentY += rowHeight;
+                                 currentX = 0;
+                                 rowHeight = 0;
+                             }
+
+                             if (currentX == 0)
+                                 rowHeight = h;
+
+                             var entry = new PackedFrameEntry
+                             {
+                                 Direction = dir,
+                                 Index = fi,
+                                 Frame = new Rect { X = currentX, Y = currentY, W = w, H = h },
+                                 Center = new PointStruct { X = anim.Center.X, Y = anim.Center.Y }
+                             };
+
+                             packedFrames.Add(entry);
+
+                             // store image copy
+                             images.Add(new Bitmap(anim.Bitmap));
+
+                             currentX += w;
+                             canvasWidth = Math.Max(canvasWidth, currentX);
+                             canvasHeight = Math.Max(canvasHeight, currentY + rowHeight);
+                         }
+                     }
+
+                     if (images.Count == 0)
+                     {
+                         MessageBox.Show("No frames found to pack.", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                         return;
+                     }
+
+                     // Create sprite sheet and paste images
+                     using (var sprite = new Bitmap(Math.Max(1, canvasWidth), Math.Max(1, canvasHeight)))
+                     using (var g = Graphics.FromImage(sprite))
+                     {
+                         g.Clear(Color.Transparent);
+
+                         for (int i = 0; i < images.Count; i++)
+                         {
+                             var img = images[i];
+                             var rect = packedFrames[i].Frame;
+                             g.DrawImage(img, rect.X, rect.Y, rect.W, rect.H);
+                             img.Dispose();
+                         }
+
+                         string baseName = $"anim_{_currentSelect}_{_currentSelectAction}";
+                         string imageFile = Path.Combine(outDir, baseName + ".png");
+                         sprite.Save(imageFile, ImageFormat.Png);
+
+                         // prepare JSON
+                         var outObj = new PackedOutput
+                         {
+                             Meta = new PackedMeta { Image = Path.GetFileName(imageFile), Size = new SizeStruct { W = sprite.Width, H = sprite.Height }, Format = "RGBA8888" },
+                             Frames = packedFrames
+                         };
+
+                         string jsonFile = Path.Combine(outDir, baseName + ".json");
+                         var jsOptions = new JsonSerializerOptions { WriteIndented = true };
+                         string json = JsonSerializer.Serialize(outObj, jsOptions);
+                         File.WriteAllText(jsonFile, json);
+
+                         MessageBox.Show($"Saved sprite: {imageFile}\nSaved JSON: {jsonFile}", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                     }
+                 }
+                 catch (Exception ex)
+                 {
+                     MessageBox.Show($"Failed to pack frames: {ex.Message}", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                 }
+                 finally
+                 {
+                     Cursor.Current = Cursors.Default;
+                 }
+             }
+         }
+
+        private void OnUnpackFramesClick(object? sender, EventArgs e)
+        {
+            if (_currentSelect == 0)
+            {
+                MessageBox.Show("No graphic selected.", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using (var ofd = new OpenFileDialog())
+            {
+                ofd.Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*";
+                ofd.Title = "Select packing JSON file";
+                if (ofd.ShowDialog() != DialogResult.OK)
+                {
+                    return;
+                }
+
+                string jsonFile = ofd.FileName;
+                try
+                {
+                    string json = File.ReadAllText(jsonFile);
+                    var doc = JsonSerializer.Deserialize<PackedOutput>(json);
+                    if (doc == null)
+                    {
+                        MessageBox.Show("Invalid JSON file.", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
+                    string spritePath = Path.Combine(Path.GetDirectoryName(jsonFile) ?? string.Empty, doc.Meta.Image);
+                    if (!File.Exists(spritePath))
+                    {
+                        MessageBox.Show($"Sprite sheet not found: {spritePath}", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
+                    using (var sprite = new Bitmap(spritePath))
+                    {
+                        // determine body/fileType for import
+                        int bodyTrans = _currentSelect;
+                        Animations.Translate(ref bodyTrans);
+                        int fileType = BodyConverter.Convert(ref bodyTrans);
+
+                        // Group frames by direction
+                        var groups = doc.Frames.GroupBy(f => f.Direction).ToDictionary(g => g.Key, g => g.OrderBy(f => f.Index).ToList());
+
+                        foreach (var kv in groups)
+                        {
+                            int dir = kv.Key;
+                            var framesList = kv.Value;
+
+                            AnimIdx animIdx = AnimationEdit.GetAnimation(fileType, bodyTrans, _currentSelectAction, dir);
+                            if (animIdx == null)
+                            {
+                                MessageBox.Show($"Failed to get AnimIdx for direction {dir}", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                continue;
+                            }
+
+                            // Ask whether to overwrite frames for this direction
+                            var res = MessageBox.Show($"Overwrite existing frames for direction {dir}? (Yes = overwrite, No = append)", "Unpack Frames", MessageBoxButtons.YesNoCancel);
+                            if (res == DialogResult.Cancel)
+                            {
+                                return;
+                            }
+
+                            if (res == DialogResult.Yes)
+                            {
+                                animIdx.ClearFrames();
+                            }
+
+                            foreach (var frameEntry in framesList)
+                            {
+                                var r = frameEntry.Frame;
+                                var crop = sprite.Clone(new Rectangle(r.X, r.Y, r.W, r.H), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                                // convert to 16bpp used by AnimIdx methods - AnimIdx.AddFrame expects Bitmap in proper pixel format; conversion happens in FrameEdit
+                                Bitmap bmp16 = new Bitmap(crop);
+                                crop.Dispose();
+
+                                animIdx.AddFrame(bmp16, frameEntry.Center.X, frameEntry.Center.Y);
+                            }
+                        }
+
+                        Options.ChangedUltimaClass["Animations"] = true;
+
+                        MessageBox.Show("Import finished. Remember to save animations via AnimationEdit.Save if needed.", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to unpack/import frames: {ex.Message}", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
         }
-    }
 
-    public class GraphicSorter : IComparer
-    {
-        public int Compare(object x, object y)
+        // Helper types for JSON
+        private class PackedOutput
         {
-            TreeNode tx = x as TreeNode;
-            TreeNode ty = y as TreeNode;
-            if (tx.Parent == null)
+            [JsonPropertyName("meta")] public PackedMeta Meta { get; set; }
+            [JsonPropertyName("frames")] public List<PackedFrameEntry> Frames { get; set; }
+        }
+
+        private class PackedMeta
+        {
+            [JsonPropertyName("image")] public string Image { get; set; }
+            [JsonPropertyName("size")] public SizeStruct Size { get; set; }
+            [JsonPropertyName("format")] public string Format { get; set; }
+        }
+
+        private class PackedFrameEntry
+        {
+            [JsonPropertyName("direction")] public int Direction { get; set; }
+            [JsonPropertyName("index")] public int Index { get; set; }
+            [JsonPropertyName("frame")] public Rect Frame { get; set; }
+            [JsonPropertyName("center")] public PointStruct Center { get; set; }
+        }
+
+        private class Rect
+        {
+            [JsonPropertyName("x")] public int X { get; set; }
+            [JsonPropertyName("y")] public int Y { get; set; }
+            [JsonPropertyName("w")] public int W { get; set; }
+            [JsonPropertyName("h")] public int H { get; set; }
+        }
+
+        private class PointStruct
+        {
+            [JsonPropertyName("x")] public int X { get; set; }
+            [JsonPropertyName("y")] public int Y { get; set; }
+        }
+
+        private class SizeStruct
+        {
+            [JsonPropertyName("w")] public int W { get; set; }
+            [JsonPropertyName("h")] public int H { get; set; }
+        }
+
+        private class AlphaSorter : IComparer
+        {
+            public int Compare(object x, object y)
             {
-                return (int)tx.Tag == -1 ? -1 : 1;
+                TreeNode tx = x as TreeNode;
+                TreeNode ty = y as TreeNode;
+                if (tx.Parent == null) // don't change Mob and Equipment
+                {
+                    return (int)tx.Tag == -1 ? -1 : 1;
+                }
+                if (tx.Parent.Parent != null)
+                {
+                    return (int)tx.Tag - (int)ty.Tag;
+                }
+
+                return string.CompareOrdinal(tx.Text, ty.Text);
+            }
+        }
+
+        public class GraphicSorter : IComparer
+        {
+            public int Compare(object x, object y)
+            {
+                TreeNode tx = x as TreeNode;
+                TreeNode ty = y as TreeNode;
+                if (tx.Parent == null)
+                {
+                    return (int)tx.Tag == -1 ? -1 : 1;
+                }
+
+                if (tx.Parent.Parent != null)
+                {
+                    return (int)tx.Tag - (int)ty.Tag;
+                }
+
+                int[] ix = (int[])tx.Tag;
+                int[] iy = (int[])ty.Tag;
+
+                if (ix[0] == iy[0])
+                {
+                    return 0;
+                }
+
+                if (ix[0] < iy[0])
+                {
+                    return -1;
+                }
+
+                return 1;
+            }
+        }
+
+        // Pack options dialog (moved here to ensure compilation visibility)
+        public class PackOptionsForm : Form
+        {
+            private CheckedListBox _directionsBox;
+            private NumericUpDown _maxWidthUpDown;
+            private Button _ok;
+            private Button _cancel;
+
+            public List<int> SelectedDirections { get; private set; } = new List<int> { 0, 1, 2, 3, 4 };
+            public int MaxWidth { get; private set; } = 2048;
+
+            public PackOptionsForm()
+            {
+                Text = "Pack Options";
+                FormBorderStyle = FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+                StartPosition = FormStartPosition.CenterParent;
+                // increased size to accommodate taller direction list and wider right side
+                ClientSize = new Size(520, 360);
+                Padding = new Padding(10);
+
+                Label lbl = new Label { Text = "Directions:", Location = new Point(12, 12), AutoSize = true };
+                Controls.Add(lbl);
+
+                _directionsBox = new CheckedListBox
+                {
+                    Location = new Point(12, 32),
+                    // make dropdown / list taller
+                    Size = new Size(160, 260),
+                    CheckOnClick = true,
+                    ScrollAlwaysVisible = true,
+                    IntegralHeight = false
+                };
+                for (int i = 0; i < 8; i++)
+                {
+                    _directionsBox.Items.Add(i.ToString(), i <= 4);
+                }
+                Controls.Add(_directionsBox);
+
+                // move the max sprite width controls further to the right
+                Label lbl2 = new Label { Text = "Max sprite width:", Location = new Point(190, 32), AutoSize = true };
+                Controls.Add(lbl2);
+
+                _maxWidthUpDown = new NumericUpDown
+                {
+                    Location = new Point(190, 56),
+                    Size = new Size(260, 30),
+                    Minimum = 256,
+                    Maximum = 8192,
+                    Increment = 64,
+                    Value = 2048,
+                    ThousandsSeparator = true
+                };
+                Controls.Add(_maxWidthUpDown);
+
+                // Optional quick presets (moved right and made slightly taller)
+                var presetsLabel = new Label { Text = "Presets:", Location = new Point(190, 95), AutoSize = true };
+                Controls.Add(presetsLabel);
+                var presetSmall = new Button { Text = "1024", Location = new Point(190, 115), Size = new Size(70, 34) };
+                var presetMedium = new Button { Text = "2048", Location = new Point(266, 115), Size = new Size(70, 34) };
+                var presetLarge = new Button { Text = "4096", Location = new Point(342, 115), Size = new Size(70, 34) };
+                presetSmall.Click += (s, e) => _maxWidthUpDown.Value = 1024;
+                presetMedium.Click += (s, e) => _maxWidthUpDown.Value = 2048;
+                presetLarge.Click += (s, e) => _maxWidthUpDown.Value = 4096;
+                Controls.Add(presetSmall);
+                Controls.Add(presetMedium);
+                Controls.Add(presetLarge);
+
+                // make OK/Cancel taller and move to the right (anchored)
+                _ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(330, 300), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+                _ok.Click += Ok_Click;
+                Controls.Add(_ok);
+
+                _cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(440, 300), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+                Controls.Add(_cancel);
+
+                AcceptButton = _ok;
+                CancelButton = _cancel;
             }
 
-            if (tx.Parent.Parent != null)
+            private void Ok_Click(object sender, EventArgs e)
             {
-                return (int)tx.Tag - (int)ty.Tag;
+                // Collect checked directions as integers
+                SelectedDirections = _directionsBox.CheckedItems.Cast<object>().Select(o => int.Parse(o.ToString())).ToList();
+                if (SelectedDirections.Count == 0)
+                {
+                    MessageBox.Show("Select at least one direction.", "Pack Options", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    DialogResult = DialogResult.None;
+                    return;
+                }
+
+                MaxWidth = (int)_maxWidthUpDown.Value;
             }
-
-            int[] ix = (int[])tx.Tag;
-            int[] iy = (int[])ty.Tag;
-
-            if (ix[0] == iy[0])
-            {
-                return 0;
-            }
-
-            if (ix[0] < iy[0])
-            {
-                return -1;
-            }
-
-            return 1;
         }
     }
 }
