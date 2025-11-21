@@ -1142,43 +1142,56 @@ namespace UoFiddler.Controls.UserControls
                         // Group frames by direction
                         var groups = doc.Frames.GroupBy(f => f.Direction).ToDictionary(g => g.Key, g => g.OrderBy(f => f.Index).ToList());
 
+                        // Ask the user once how to handle existing frames
+                        DialogResult globalChoice = MessageBox.Show(
+                            "Overwrite existing frames for all directions?\n\nYes = overwrite\nNo = append\nCancel = abort import",
+                            "Unpack Frames", MessageBoxButtons.YesNoCancel);
+
+                        if (globalChoice == DialogResult.Cancel)
+                            return;
+
+                        bool overwriteAll = (globalChoice == DialogResult.Yes);
+
+                        // Build palette once 
+                        var allRects = doc.Frames.Select(f => new RectangleF(f.Frame.X, f.Frame.Y, f.Frame.W, f.Frame.H)).ToList();
+                        var importPalette = BuildPaletteFromFrames(sprite, allRects, alphaThreshold: 4);
+
                         foreach (var kv in groups)
                         {
                             int dir = kv.Key;
                             var framesList = kv.Value;
 
-                            AnimIdx animIdx = AnimationEdit.GetAnimation(fileType, bodyTrans, _currentSelectAction, dir);
-                            if (animIdx == null)
-                            {
-                                MessageBox.Show($"Failed to get AnimIdx for direction {dir}", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                                continue;
-                            }
+                            var animIdx = RequireAnimIdx(fileType, bodyTrans, _currentSelectAction, dir);
 
-                            // Ask whether to overwrite frames for this direction
-                            var res = MessageBox.Show($"Overwrite existing frames for direction {dir}? (Yes = overwrite, No = append)", "Unpack Frames", MessageBoxButtons.YesNoCancel);
-                            if (res == DialogResult.Cancel)
-                            {
-                                return;
-                            }
+                            if (overwriteAll) animIdx.ClearFrames();
 
-                            if (res == DialogResult.Yes)
-                            {
-                                animIdx.ClearFrames();
-                            }
+                            animIdx.ReplacePalette(importPalette); // key for proper color mapping
 
+                            int imported = 0;
                             foreach (var frameEntry in framesList)
                             {
                                 var r = frameEntry.Frame;
-                                var crop = sprite.Clone(new Rectangle(r.X, r.Y, r.W, r.H), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-                                // convert to 16bpp used by AnimIdx methods - AnimIdx.AddFrame expects Bitmap in proper pixel format; conversion happens in FrameEdit
-                                Bitmap bmp16 = new Bitmap(crop);
-                                crop.Dispose();
+                                // bounds guard to avoid GDI+ OutOfMemory on bad rects
+                                if (r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 0 ||
+                                    r.X + r.W > sprite.Width || r.Y + r.H > sprite.Height)
+                                    continue;
 
-                                animIdx.AddFrame(bmp16, frameEntry.Center.X, frameEntry.Center.Y);
+                                using (var bit16 = Extract1555Region(sprite, new Rectangle(r.X, r.Y, r.W, r.H), alphaThreshold: 4))
+                                {
+                                    animIdx.AddFrame(bit16, frameEntry.Center.X, frameEntry.Center.Y);
+                                }
+
+                                // light GC throttle for very large imports
+                                if ((++imported & 127) == 0)
+                                {
+                                    GC.Collect();
+                                    GC.WaitForPendingFinalizers();
+                                }
                             }
                         }
 
                         Options.ChangedUltimaClass["Animations"] = true;
+                        CurrentSelect = CurrentSelect;   // this calls SetPicture() and repopulates frames
 
                         MessageBox.Show("Import finished. Remember to save animations via AnimationEdit.Save if needed.", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
@@ -1190,7 +1203,230 @@ namespace UoFiddler.Controls.UserControls
             }
         }
 
+        // --- Reflection helpers (safe & cached) ---
+        private static ushort[] BuildPaletteFromFrames(Bitmap sprite, IEnumerable<RectangleF> rects, byte alphaThreshold = 4)
+        {
+            var freq = new Dictionary<ushort, int>(capacity: 4096);
+
+            // Lock the whole sprite once (32bpp ARGB)
+            var sheetRect = new Rectangle(0, 0, sprite.Width, sprite.Height);
+            var sData = sprite.LockBits(sheetRect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                unsafe
+                {
+                    byte* basePtr = (byte*)sData.Scan0;
+                    int stride = sData.Stride;
+
+                    foreach (var rf in rects)
+                    {
+                        var r = Rectangle.Round(rf);
+                        if (r.Width <= 0 || r.Height <= 0) continue;
+                        if (r.X < 0 || r.Y < 0 || r.Right > sprite.Width || r.Bottom > sprite.Height) continue;
+
+                        for (int y = 0; y < r.Height; y++)
+                        {
+                            byte* src = basePtr + (r.Y + y) * stride + r.X * 4;
+                            for (int x = 0; x < r.Width; x++)
+                            {
+                                byte b = src[0], g = src[1], r8 = src[2], a = src[3];
+                                src += 4;
+
+                                if (a <= alphaThreshold) continue; // transparent -> skip
+
+                                ushort col =
+                                    (ushort)(0x8000 | ((r8 >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)); // A1R5G5B5
+
+                                if (freq.TryGetValue(col, out int n)) freq[col] = n + 1;
+                                else freq[col] = 1;
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                sprite.UnlockBits(sData);
+            }
+
+            var palette = new ushort[256];
+            int i = 0;
+            foreach (var kv in freq.OrderByDescending(kv => kv.Value).Take(256))
+                palette[i++] = kv.Key;
+
+            return palette;
+        }
+
+        private static Bitmap Extract1555Region(Bitmap sprite, Rectangle rect, byte alphaThreshold = 4)
+        {
+            // Bounds guard
+            if (rect.Width <= 0 || rect.Height <= 0) throw new ArgumentException("Empty region.");
+            if (rect.X < 0 || rect.Y < 0 || rect.Right > sprite.Width || rect.Bottom > sprite.Height)
+                throw new ArgumentOutOfRangeException(nameof(rect), "Region outside sprite bounds.");
+
+            // Dest: 16bpp A1R5G5B5
+            Bitmap dst16 = new Bitmap(rect.Width, rect.Height, PixelFormat.Format16bppArgb1555);
+
+            var sheetRect = new Rectangle(0, 0, sprite.Width, sprite.Height);
+            var sData = sprite.LockBits(sheetRect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            var dData = dst16.LockBits(new Rectangle(0, 0, rect.Width, rect.Height), ImageLockMode.WriteOnly, PixelFormat.Format16bppArgb1555);
+
+            try
+            {
+                unsafe
+                {
+                    byte* sBase = (byte*)sData.Scan0;
+                    int sStride = sData.Stride;
+
+                    byte* dBase = (byte*)dData.Scan0;
+                    int dStride = dData.Stride;
+
+                    for (int y = 0; y < rect.Height; y++)
+                    {
+                        byte* sp = sBase + (rect.Y + y) * sStride + rect.X * 4;
+                        ushort* dp = (ushort*)(dBase + y * dStride);
+
+                        for (int x = 0; x < rect.Width; x++)
+                        {
+                            byte b = sp[0], g = sp[1], r = sp[2], a = sp[3];
+                            sp += 4;
+
+                            if (a <= alphaThreshold)
+                                dp[x] = 0; // transparent
+                            else
+                                dp[x] = (ushort)(0x8000 | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                sprite.UnlockBits(sData);
+                dst16.UnlockBits(dData);
+            }
+
+            return dst16;
+        }
+
+        private static Bitmap ToArgb1555From32(Bitmap src32, byte alphaThreshold = 8)
+        {
+            if (src32.PixelFormat != PixelFormat.Format32bppArgb)
+                throw new ArgumentException("src32 must be 32bpp ARGB.", nameof(src32));
+
+            int w = src32.Width, h = src32.Height;
+            var rect = new Rectangle(0, 0, w, h);
+            Bitmap dst16 = new Bitmap(w, h, PixelFormat.Format16bppArgb1555);
+
+            var sData = src32.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            var dData = dst16.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format16bppArgb1555);
+
+            try
+            {
+                unsafe
+                {
+                    byte* sp = (byte*)sData.Scan0;
+                    byte* dp = (byte*)dData.Scan0;
+                    int sStride = sData.Stride, dStride = dData.Stride;
+
+                    for (int y = 0; y < h; y++)
+                    {
+                        byte* sRow = sp + y * sStride;
+                        ushort* dRow = (ushort*)(dp + y * dStride);
+                        for (int x = 0; x < w; x++)
+                        {
+                            byte b = sRow[0], g = sRow[1], r = sRow[2], a = sRow[3];
+                            if (a <= alphaThreshold)
+                            {
+                                dRow[x] = 0; // A=0 transparent
+                            }
+                            else
+                            {
+                                ushort A = 0x8000;
+                                ushort R = (ushort)((r >> 3) << 10);
+                                ushort G = (ushort)((g >> 3) << 5);
+                                ushort B = (ushort)(b >> 3);
+                                dRow[x] = (ushort)(A | R | G | B);
+                            }
+                            sRow += 4;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                src32.UnlockBits(sData);
+                dst16.UnlockBits(dData);
+            }
+            return dst16;
+        }
+
+
+
         // Helper types for JSON
+        // Replace the entire EnsureAnimIdx(..) with this:
+        private static AnimIdx RequireAnimIdx(int fileType, int body, int action, int dir)
+        {
+            var anim = AnimationEdit.GetAnimation(fileType, body, action, dir);
+            if (anim == null)
+                throw new InvalidOperationException(
+                    $"Target animation missing (fileType={fileType}, body={body}, action={action}, dir={dir}). " +
+                    "Create the action/direction in Animation Edit first, then re-run the import."
+                );
+            return anim;
+        }
+
+        private static Bitmap UnPremultiply(Bitmap src32)
+
+        {
+            // expects PixelFormat.Format32bppArgb
+            var rect = new Rectangle(0, 0, src32.Width, src32.Height);
+            var data = src32.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                Bitmap dst = new Bitmap(src32.Width, src32.Height, PixelFormat.Format32bppArgb);
+                var ddata = dst.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+                try
+                {
+                    unsafe
+                    {
+                        byte* sp = (byte*)data.Scan0;
+                        byte* dp = (byte*)ddata.Scan0;
+                        int sw = data.Stride, dw = ddata.Stride;
+                        for (int y = 0; y < src32.Height; y++)
+                        {
+                            byte* srow = sp + y * sw;
+                            byte* drow = dp + y * dw;
+                            for (int x = 0; x < src32.Width; x++)
+                            {
+                                byte b = srow[0], g = srow[1], r = srow[2], a = srow[3];
+                                if (a == 0)
+                                {
+                                    drow[0] = drow[1] = drow[2] = 0; drow[3] = 0;
+                                }
+                                else if (a == 255)
+                                {
+                                    drow[0] = b; drow[1] = g; drow[2] = r; drow[3] = 255;
+                                }
+                                else
+                                {
+                                    // convert from premultiplied to straight alpha
+                                    drow[0] = (byte)Math.Min(255, (b * 255 + (a >> 1)) / a);
+                                    drow[1] = (byte)Math.Min(255, (g * 255 + (a >> 1)) / a);
+                                    drow[2] = (byte)Math.Min(255, (r * 255 + (a >> 1)) / a);
+                                    drow[3] = a;
+                                }
+                                srow += 4; drow += 4;
+                            }
+                        }
+                    }
+                }
+                finally { dst.UnlockBits(ddata); }
+                return dst;
+            }
+            finally { src32.UnlockBits(data); }
+        }
+
+
         private class PackedOutput
         {
             [JsonPropertyName("meta")] public PackedMeta Meta { get; set; }

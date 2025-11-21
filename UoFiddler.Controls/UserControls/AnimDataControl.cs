@@ -317,7 +317,7 @@ namespace UoFiddler.Controls.UserControls
         {
             if (_selAnimdataEntry == null)
             {
-                return;
+                return; 
             }
 
             if (_selAnimdataEntry.FrameStart == (byte)numericUpDownStartDelay.Value)
