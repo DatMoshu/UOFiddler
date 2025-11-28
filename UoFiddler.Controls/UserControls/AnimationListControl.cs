@@ -16,10 +16,10 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
-using System.Windows.Forms;
-using System.Xml;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Windows.Forms;
+using System.Xml;
 using Ultima;
 using UoFiddler.Controls.Classes;
 using UoFiddler.Controls.Forms;
@@ -969,133 +969,157 @@ namespace UoFiddler.Controls.UserControls
 
             var selectedDirections = optionsForm.SelectedDirections; // list<int>
             int maxWidth = optionsForm.MaxWidth;
+            bool oneRowPerDirection = optionsForm.OneRowPerDirection;
 
-             // Ask for output base name/location
-             using (var dlg = new FolderBrowserDialog())
-             {
-                 dlg.Description = "Select folder to save packed sprite and JSON";
-                 dlg.ShowNewFolderButton = true;
-                 if (dlg.ShowDialog() != DialogResult.OK)
-                 {
-                     return;
-                 }
+            // Ask for output base name/location
+            using (var dlg = new FolderBrowserDialog())
+            {
+                dlg.Description = "Select folder to save packed sprite and JSON";
+                dlg.ShowNewFolderButton = true;
+                if (dlg.ShowDialog() != DialogResult.OK)
+                {
+                    return;
+                }
 
-                 string outDir = dlg.SelectedPath;
+                string outDir = dlg.SelectedPath;
 
-                 try
-                 {
-                     Cursor.Current = Cursors.WaitCursor;
+                try
+                {
+                    Cursor.Current = Cursors.WaitCursor;
 
-                     // Collect frames for directions 0..4 (common editable directions)
-                     var packedFrames = new List<PackedFrameEntry>();
+                    // Collect frames for directions 0..4 (common editable directions)
+                    var packedFrames = new List<PackedFrameEntry>();
 
-                     int body = _currentSelect;
-                     Animations.Translate(ref body);
-                     int hue = 0; // do not preserve hue here
+                    int body = _currentSelect;
+                    Animations.Translate(ref body);
+                    int hue = 0; // do not preserve hue here
 
-                     var images = new List<Bitmap>();
+                    var images = new List<Bitmap>();
 
-                     int currentX = 0, currentY = 0, rowHeight = 0, canvasWidth = 0, canvasHeight = 0;
+                    int currentX = 0, currentY = 0, rowHeight = 0, canvasWidth = 0, canvasHeight = 0;
+                    var rowMapping = new System.Text.StringBuilder();
+                    int rowIndex = 0;
 
-                     foreach (int dir in selectedDirections)
-                     {
-                         int localHue = 0;
-                         var frames = Animations.GetAnimation(_currentSelect, _currentSelectAction, dir, ref localHue, false, false);
-                         if (frames == null || frames.Length == 0)
-                         {
-                             continue;
-                         }
+                    foreach (int dir in selectedDirections)
+                    {
+                        int localHue = 0;
+                        var frames = Animations.GetAnimation(_currentSelect, _currentSelectAction, dir, ref localHue, false, false);
+                        if (frames == null || frames.Length == 0)
+                        {
+                            continue;
+                        }
 
-                         for (int fi = 0; fi < frames.Length; fi++)
-                         {
-                             var anim = frames[fi];
-                             if (anim?.Bitmap == null)
-                             {
-                                 continue;
-                             }
+                        if (oneRowPerDirection)
+                        {
+                            if (currentX > 0)
+                            {
+                                currentY += rowHeight;
+                                currentX = 0;
+                                rowHeight = 0;
+                            }
+                            rowMapping.AppendLine($"Row {rowIndex++}: Facing {GetDirectionName(dir)}");
+                        }
 
-                             // determine size
-                             int w = anim.Bitmap.Width;
-                             int h = anim.Bitmap.Height;
+                        for (int fi = 0; fi < frames.Length; fi++)
+                        {
+                            var anim = frames[fi];
+                            if (anim?.Bitmap == null)
+                            {
+                                continue;
+                            }
 
-                             if (currentX + w > maxWidth)
-                             {
-                                 currentY += rowHeight;
-                                 currentX = 0;
-                                 rowHeight = 0;
-                             }
+                            // determine size
+                            int w = anim.Bitmap.Width;
+                            int h = anim.Bitmap.Height;
 
-                             if (currentX == 0)
-                                 rowHeight = h;
+                            if (!oneRowPerDirection && currentX + w > maxWidth)
+                            {
+                                currentY += rowHeight;
+                                currentX = 0;
+                                rowHeight = 0;
+                            }
 
-                             var entry = new PackedFrameEntry
-                             {
-                                 Direction = dir,
-                                 Index = fi,
-                                 Frame = new Rect { X = currentX, Y = currentY, W = w, H = h },
-                                 Center = new PointStruct { X = anim.Center.X, Y = anim.Center.Y }
-                             };
+                            if (currentX == 0)
+                                rowHeight = h;
+                            rowHeight = h;
 
-                             packedFrames.Add(entry);
+                            var entry = new PackedFrameEntry
+                            {
+                                Direction = dir,
+                                Index = fi,
+                                Frame = new Rect { X = currentX, Y = currentY, W = w, H = h },
+                                Center = new PointStruct { X = anim.Center.X, Y = anim.Center.Y }
+                            };
 
-                             // store image copy
-                             images.Add(new Bitmap(anim.Bitmap));
+                            packedFrames.Add(entry);
 
-                             currentX += w;
-                             canvasWidth = Math.Max(canvasWidth, currentX);
-                             canvasHeight = Math.Max(canvasHeight, currentY + rowHeight);
-                         }
-                     }
+                            // store image copy
+                            images.Add(new Bitmap(anim.Bitmap));
 
-                     if (images.Count == 0)
-                     {
-                         MessageBox.Show("No frames found to pack.", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                         return;
-                     }
+                            currentX += w;
+                            canvasWidth = Math.Max(canvasWidth, currentX);
+                            canvasHeight = Math.Max(canvasHeight, currentY + rowHeight);
+                        }
+                    }
 
-                     // Create sprite sheet and paste images
-                     using (var sprite = new Bitmap(Math.Max(1, canvasWidth), Math.Max(1, canvasHeight)))
-                     using (var g = Graphics.FromImage(sprite))
-                     {
-                         g.Clear(Color.Transparent);
+                    if (images.Count == 0)
+                    {
+                        MessageBox.Show("No frames found to pack.", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
 
-                         for (int i = 0; i < images.Count; i++)
-                         {
-                             var img = images[i];
-                             var rect = packedFrames[i].Frame;
-                             g.DrawImage(img, rect.X, rect.Y, rect.W, rect.H);
-                             img.Dispose();
-                         }
+                    // Create sprite sheet and paste images
+                    using (var sprite = new Bitmap(Math.Max(1, canvasWidth), Math.Max(1, canvasHeight)))
+                    using (var g = Graphics.FromImage(sprite))
+                    {
+                        g.Clear(Color.Transparent);
 
-                         string baseName = $"anim_{_currentSelect}_{_currentSelectAction}";
-                         string imageFile = Path.Combine(outDir, baseName + ".png");
-                         sprite.Save(imageFile, ImageFormat.Png);
+                        for (int i = 0; i < images.Count; i++)
+                        {
+                            var img = images[i];
+                            var rect = packedFrames[i].Frame;
+                            g.DrawImage(img, rect.X, rect.Y, rect.W, rect.H);
+                            img.Dispose();
+                        }
 
-                         // prepare JSON
-                         var outObj = new PackedOutput
-                         {
-                             Meta = new PackedMeta { Image = Path.GetFileName(imageFile), Size = new SizeStruct { W = sprite.Width, H = sprite.Height }, Format = "RGBA8888" },
-                             Frames = packedFrames
-                         };
+                        string baseName = $"anim_{_currentSelect}_{_currentSelectAction}";
+                        string imageFile = Path.Combine(outDir, baseName + ".png");
+                        sprite.Save(imageFile, ImageFormat.Png);
 
-                         string jsonFile = Path.Combine(outDir, baseName + ".json");
-                         var jsOptions = new JsonSerializerOptions { WriteIndented = true };
-                         string json = JsonSerializer.Serialize(outObj, jsOptions);
-                         File.WriteAllText(jsonFile, json);
+                        // prepare JSON
+                        var outObj = new PackedOutput
+                        {
+                            Meta = new PackedMeta { Image = Path.GetFileName(imageFile), Size = new SizeStruct { W = sprite.Width, H = sprite.Height }, Format = "RGBA8888" },
+                            Frames = packedFrames
+                        };
 
-                         MessageBox.Show($"Saved sprite: {imageFile}\nSaved JSON: {jsonFile}", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                     }
-                 }
-                 catch (Exception ex)
-                 {
-                     MessageBox.Show($"Failed to pack frames: {ex.Message}", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                 }
-                 finally
-                 {
-                     Cursor.Current = Cursors.Default;
-                 }
-             }
-         }
+                        string jsonFile = Path.Combine(outDir, baseName + ".json");
+                        var jsOptions = new JsonSerializerOptions { WriteIndented = true };
+                        string json = JsonSerializer.Serialize(outObj, jsOptions);
+                        File.WriteAllText(jsonFile, json);
+
+                        if (oneRowPerDirection)
+                        {
+                            string txtFile = Path.Combine(outDir, baseName + "_rows.txt");
+                            File.WriteAllText(txtFile, rowMapping.ToString());
+                            MessageBox.Show($"Saved sprite: {imageFile}\nSaved JSON: {jsonFile}\nSaved Info: {txtFile}", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                        else
+                        {
+                            MessageBox.Show($"Saved sprite: {imageFile}\nSaved JSON: {jsonFile}", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to pack frames: {ex.Message}", "Pack Frames", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally
+                {
+                    Cursor.Current = Cursors.Default;
+                }
+            }
+        }
 
         private void OnUnpackFramesClick(object? sender, EventArgs e)
         {
@@ -1448,6 +1472,22 @@ namespace UoFiddler.Controls.UserControls
             [JsonPropertyName("center")] public PointStruct Center { get; set; }
         }
 
+        private string GetDirectionName(int dir)
+        {
+            switch (dir)
+            {
+                case 0: return "South";
+                case 1: return "South West";
+                case 2: return "West";
+                case 3: return "North West";
+                case 4: return "North";
+                case 5: return "North East";
+                case 6: return "East";
+                case 7: return "South East";
+                default: return "Unknown";
+            }
+        }
+
         private class Rect
         {
             [JsonPropertyName("x")] public int X { get; set; }
@@ -1525,11 +1565,13 @@ namespace UoFiddler.Controls.UserControls
         {
             private CheckedListBox _directionsBox;
             private NumericUpDown _maxWidthUpDown;
+            private CheckBox _oneRowPerDirectionCheckBox;
             private Button _ok;
             private Button _cancel;
 
             public List<int> SelectedDirections { get; private set; } = new List<int> { 0, 1, 2, 3, 4 };
             public int MaxWidth { get; private set; } = 2048;
+            public bool OneRowPerDirection { get; private set; }
 
             public PackOptionsForm()
             {
@@ -1589,6 +1631,14 @@ namespace UoFiddler.Controls.UserControls
                 Controls.Add(presetMedium);
                 Controls.Add(presetLarge);
 
+                _oneRowPerDirectionCheckBox = new CheckBox
+                {
+                    Text = "One row per direction",
+                    Location = new Point(12, 300),
+                    AutoSize = true
+                };
+                Controls.Add(_oneRowPerDirectionCheckBox);
+
                 // make OK/Cancel taller and move to the right (anchored)
                 _ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(330, 300), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
                 _ok.Click += Ok_Click;
@@ -1613,6 +1663,7 @@ namespace UoFiddler.Controls.UserControls
                 }
 
                 MaxWidth = (int)_maxWidthUpDown.Value;
+                OneRowPerDirection = _oneRowPerDirectionCheckBox.Checked;
             }
         }
     }
