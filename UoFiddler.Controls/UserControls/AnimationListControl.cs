@@ -970,6 +970,7 @@ namespace UoFiddler.Controls.UserControls
             var selectedDirections = optionsForm.SelectedDirections; // list<int>
             int maxWidth = optionsForm.MaxWidth;
             bool oneRowPerDirection = optionsForm.OneRowPerDirection;
+            int spacing = optionsForm.FrameSpacing;
 
             // Ask for output base name/location
             using (var dlg = new FolderBrowserDialog())
@@ -996,7 +997,7 @@ namespace UoFiddler.Controls.UserControls
 
                     var images = new List<Bitmap>();
 
-                    int currentX = 0, currentY = 0, rowHeight = 0, canvasWidth = 0, canvasHeight = 0;
+                    int currentX = spacing, currentY = spacing, rowHeight = 0, canvasWidth = 0, canvasHeight = 0;
                     var rowMapping = new System.Text.StringBuilder();
                     int rowIndex = 0;
 
@@ -1011,10 +1012,10 @@ namespace UoFiddler.Controls.UserControls
 
                         if (oneRowPerDirection)
                         {
-                            if (currentX > 0)
+                            if (currentX > spacing)
                             {
-                                currentY += rowHeight;
-                                currentX = 0;
+                                currentY += rowHeight + spacing;
+                                currentX = spacing;
                                 rowHeight = 0;
                             }
                             rowMapping.AppendLine($"Row {rowIndex++}: Facing {GetDirectionName(dir)}");
@@ -1034,14 +1035,15 @@ namespace UoFiddler.Controls.UserControls
 
                             if (!oneRowPerDirection && currentX + w > maxWidth)
                             {
-                                currentY += rowHeight;
-                                currentX = 0;
+                                currentY += rowHeight + spacing;
+                                currentX = spacing;
                                 rowHeight = 0;
                             }
 
-                            if (currentX == 0)
+                            if (currentX == spacing)
                                 rowHeight = h;
-                            rowHeight = h;
+                            else
+                                rowHeight = Math.Max(rowHeight, h);
 
                             var entry = new PackedFrameEntry
                             {
@@ -1056,9 +1058,9 @@ namespace UoFiddler.Controls.UserControls
                             // store image copy
                             images.Add(new Bitmap(anim.Bitmap));
 
-                            currentX += w;
+                            currentX += w + spacing;
                             canvasWidth = Math.Max(canvasWidth, currentX);
-                            canvasHeight = Math.Max(canvasHeight, currentY + rowHeight);
+                            canvasHeight = Math.Max(canvasHeight, currentY + rowHeight + spacing);
                         }
                     }
 
@@ -1566,12 +1568,15 @@ namespace UoFiddler.Controls.UserControls
             private CheckedListBox _directionsBox;
             private NumericUpDown _maxWidthUpDown;
             private CheckBox _oneRowPerDirectionCheckBox;
+            private TrackBar _spacingTrackBar;
+            private Label _spacingLabel;
             private Button _ok;
             private Button _cancel;
 
             public List<int> SelectedDirections { get; private set; } = new List<int> { 0, 1, 2, 3, 4 };
             public int MaxWidth { get; private set; } = 2048;
             public bool OneRowPerDirection { get; private set; }
+            public int FrameSpacing { get; private set; } = 0;
 
             public PackOptionsForm()
             {
@@ -1581,7 +1586,7 @@ namespace UoFiddler.Controls.UserControls
                 MinimizeBox = false;
                 StartPosition = FormStartPosition.CenterParent;
                 // increased size to accommodate taller direction list and wider right side
-                ClientSize = new Size(520, 360);
+                ClientSize = new Size(520, 420);
                 Padding = new Padding(10);
 
                 Label lbl = new Label { Text = "Directions:", Location = new Point(12, 12), AutoSize = true };
@@ -1631,6 +1636,25 @@ namespace UoFiddler.Controls.UserControls
                 Controls.Add(presetMedium);
                 Controls.Add(presetLarge);
 
+                // Spacing Slider
+                var spacingTitle = new Label { Text = "Spacing:", Location = new Point(190, 160), AutoSize = true };
+                Controls.Add(spacingTitle);
+
+                _spacingLabel = new Label { Text = "0", Location = new Point(460, 160), AutoSize = true };
+                Controls.Add(_spacingLabel);
+
+                _spacingTrackBar = new TrackBar
+                {
+                    Location = new Point(190, 180),
+                    Size = new Size(280, 45),
+                    Minimum = 0,
+                    Maximum = 20,
+                    Value = 0,
+                    TickFrequency = 1
+                };
+                _spacingTrackBar.Scroll += (s, e) => _spacingLabel.Text = _spacingTrackBar.Value.ToString();
+                Controls.Add(_spacingTrackBar);
+
                 _oneRowPerDirectionCheckBox = new CheckBox
                 {
                     Text = "One row per direction",
@@ -1640,11 +1664,11 @@ namespace UoFiddler.Controls.UserControls
                 Controls.Add(_oneRowPerDirectionCheckBox);
 
                 // make OK/Cancel taller and move to the right (anchored)
-                _ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(330, 300), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+                _ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(330, 360), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
                 _ok.Click += Ok_Click;
                 Controls.Add(_ok);
 
-                _cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(440, 300), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+                _cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(440, 360), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
                 Controls.Add(_cancel);
 
                 AcceptButton = _ok;
@@ -1664,6 +1688,7 @@ namespace UoFiddler.Controls.UserControls
 
                 MaxWidth = (int)_maxWidthUpDown.Value;
                 OneRowPerDirection = _oneRowPerDirectionCheckBox.Checked;
+                FrameSpacing = _spacingTrackBar.Value;
             }
         }
     }
