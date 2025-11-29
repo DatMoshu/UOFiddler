@@ -39,6 +39,7 @@ namespace UoFiddler.Controls.UserControls
             // Add handlers for new context menu items
             packFramesToolStripMenuItem.Click += OnPackFramesClick;
             unpackFramesToolStripMenuItem.Click += OnUnpackFramesClick;
+            bulkUnpackFramesToolStripMenuItem.Click += OnBulkUnpackFramesClick;
         }
 
 
@@ -1208,88 +1209,170 @@ namespace UoFiddler.Controls.UserControls
                 string jsonFile = ofd.FileName;
                 try
                 {
-                    string json = File.ReadAllText(jsonFile);
-                    var doc = JsonSerializer.Deserialize<PackedOutput>(json);
-                    if (doc == null)
-                    {
-                        MessageBox.Show("Invalid JSON file.", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        return;
-                    }
-
-                    string spritePath = Path.Combine(Path.GetDirectoryName(jsonFile) ?? string.Empty, doc.Meta.Image);
-                    if (!File.Exists(spritePath))
-                    {
-                        MessageBox.Show($"Sprite sheet not found: {spritePath}", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        return;
-                    }
-
-                    using (var sprite = new Bitmap(spritePath))
-                    {
-                        // determine body/fileType for import
-                        int bodyTrans = _currentSelect;
-                        Animations.Translate(ref bodyTrans);
-                        int fileType = BodyConverter.Convert(ref bodyTrans);
-
-                        // Group frames by direction
-                        var groups = doc.Frames.GroupBy(f => f.Direction).ToDictionary(g => g.Key, g => g.OrderBy(f => f.Index).ToList());
-
-                        // Ask the user once how to handle existing frames
-                        DialogResult globalChoice = MessageBox.Show(
-                            "Overwrite existing frames for all directions?\n\nYes = overwrite\nNo = append\nCancel = abort import",
-                            "Unpack Frames", MessageBoxButtons.YesNoCancel);
-
-                        if (globalChoice == DialogResult.Cancel)
-                            return;
-
-                        bool overwriteAll = (globalChoice == DialogResult.Yes);
-
-                        // Build palette once 
-                        var allRects = doc.Frames.Select(f => new RectangleF(f.Frame.X, f.Frame.Y, f.Frame.W, f.Frame.H)).ToList();
-                        var importPalette = BuildPaletteFromFrames(sprite, allRects, alphaThreshold: 4);
-
-                        foreach (var kv in groups)
-                        {
-                            int dir = kv.Key;
-                            var framesList = kv.Value;
-
-                            var animIdx = RequireAnimIdx(fileType, bodyTrans, _currentSelectAction, dir);
-
-                            if (overwriteAll) animIdx.ClearFrames();
-
-                            animIdx.ReplacePalette(importPalette); // key for proper color mapping
-
-                            int imported = 0;
-                            foreach (var frameEntry in framesList)
-                            {
-                                var r = frameEntry.Frame;
-                                // bounds guard to avoid GDI+ OutOfMemory on bad rects
-                                if (r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 0 ||
-                                    r.X + r.W > sprite.Width || r.Y + r.H > sprite.Height)
-                                    continue;
-
-                                using (var bit16 = Extract1555Region(sprite, new Rectangle(r.X, r.Y, r.W, r.H), alphaThreshold: 4))
-                                {
-                                    animIdx.AddFrame(bit16, frameEntry.Center.X, frameEntry.Center.Y);
-                                }
-
-                                // light GC throttle for very large imports
-                                if ((++imported & 127) == 0)
-                                {
-                                    GC.Collect();
-                                    GC.WaitForPendingFinalizers();
-                                }
-                            }
-                        }
-
-                        Options.ChangedUltimaClass["Animations"] = true;
-                        CurrentSelect = CurrentSelect;   // this calls SetPicture() and repopulates frames
-
-                        MessageBox.Show("Import finished. Remember to save animations via AnimationEdit.Save if needed.", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
+                    UnpackAnimation(jsonFile, _currentSelect, _currentSelectAction, true);
+                    MessageBox.Show("Import finished. Remember to save animations via AnimationEdit.Save if needed.", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show($"Failed to unpack/import frames: {ex.Message}", "Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private void OnBulkUnpackFramesClick(object? sender, EventArgs e)
+        {
+            if (_currentSelect == 0)
+            {
+                MessageBox.Show("No graphic selected.", "Bulk Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using (var dlg = new FolderBrowserDialog())
+            {
+                dlg.Description = "Select folder containing exported animations (JSON + PNG)";
+                dlg.ShowNewFolderButton = false;
+
+                if (dlg.ShowDialog() != DialogResult.OK)
+                {
+                    return;
+                }
+
+                string[] jsonFiles = Directory.GetFiles(dlg.SelectedPath, "*.json");
+                if (jsonFiles.Length == 0)
+                {
+                    MessageBox.Show("No JSON files found in selected directory.", "Bulk Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                int importedCount = 0;
+                int errorCount = 0;
+
+                Cursor.Current = Cursors.WaitCursor;
+                try
+                {
+                    // Ask user once for overwrite preference
+                    DialogResult globalChoice = MessageBox.Show(
+                        "Overwrite existing frames for all imported animations?\n\nYes = overwrite\nNo = append\nCancel = abort import",
+                        "Bulk Unpack Frames", MessageBoxButtons.YesNoCancel);
+
+                    if (globalChoice == DialogResult.Cancel)
+                        return;
+
+                    bool overwriteAll = (globalChoice == DialogResult.Yes);
+
+                    foreach (string jsonFile in jsonFiles)
+                    {
+                        // Expected format: anim_{body}_{action}.json
+                        string fileName = Path.GetFileNameWithoutExtension(jsonFile);
+                        string[] parts = fileName.Split('_');
+
+                        if (parts.Length >= 3 && parts[0] == "anim" && int.TryParse(parts[1], out int body) && int.TryParse(parts[2], out int action))
+                        {
+                            // Only import if body matches current selection (optional, but safer)
+                            if (body == _currentSelect)
+                            {
+                                try
+                                {
+                                    UnpackAnimation(jsonFile, body, action, false, overwriteAll);
+                                    importedCount++;
+                                }
+                                catch
+                                {
+                                    errorCount++;
+                                }
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    Cursor.Current = Cursors.Default;
+                }
+
+                MessageBox.Show($"Bulk import finished.\nImported: {importedCount}\nErrors: {errorCount}\n\nRemember to save animations via AnimationEdit.Save if needed.", "Bulk Unpack Frames", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        private void UnpackAnimation(string jsonFile, int body, int action, bool promptOverwrite, bool overwriteAll = false)
+        {
+            string json = File.ReadAllText(jsonFile);
+            var doc = JsonSerializer.Deserialize<PackedOutput>(json);
+            if (doc == null)
+            {
+                throw new Exception("Invalid JSON file.");
+            }
+
+            string spritePath = Path.Combine(Path.GetDirectoryName(jsonFile) ?? string.Empty, doc.Meta.Image);
+            if (!File.Exists(spritePath))
+            {
+                throw new FileNotFoundException($"Sprite sheet not found: {spritePath}");
+            }
+
+            using (var sprite = new Bitmap(spritePath))
+            {
+                // determine body/fileType for import
+                int bodyTrans = body;
+                Animations.Translate(ref bodyTrans);
+                int fileType = BodyConverter.Convert(ref bodyTrans);
+
+                // Group frames by direction
+                var groups = doc.Frames.GroupBy(f => f.Direction).ToDictionary(g => g.Key, g => g.OrderBy(f => f.Index).ToList());
+
+                if (promptOverwrite)
+                {
+                    // Ask the user once how to handle existing frames
+                    DialogResult globalChoice = MessageBox.Show(
+                        "Overwrite existing frames for all directions?\n\nYes = overwrite\nNo = append\nCancel = abort import",
+                        "Unpack Frames", MessageBoxButtons.YesNoCancel);
+
+                    if (globalChoice == DialogResult.Cancel)
+                        return;
+
+                    overwriteAll = (globalChoice == DialogResult.Yes);
+                }
+
+                // Build palette once 
+                var allRects = doc.Frames.Select(f => new RectangleF(f.Frame.X, f.Frame.Y, f.Frame.W, f.Frame.H)).ToList();
+                var importPalette = BuildPaletteFromFrames(sprite, allRects, alphaThreshold: 4);
+
+                foreach (var kv in groups)
+                {
+                    int dir = kv.Key;
+                    var framesList = kv.Value;
+
+                    var animIdx = RequireAnimIdx(fileType, bodyTrans, action, dir);
+
+                    if (overwriteAll) animIdx.ClearFrames();
+
+                    animIdx.ReplacePalette(importPalette); // key for proper color mapping
+
+                    int imported = 0;
+                    foreach (var frameEntry in framesList)
+                    {
+                        var r = frameEntry.Frame;
+                        // bounds guard to avoid GDI+ OutOfMemory on bad rects
+                        if (r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 0 ||
+                            r.X + r.W > sprite.Width || r.Y + r.H > sprite.Height)
+                            continue;
+
+                        using (var bit16 = Extract1555Region(sprite, new Rectangle(r.X, r.Y, r.W, r.H), alphaThreshold: 4))
+                        {
+                            animIdx.AddFrame(bit16, frameEntry.Center.X, frameEntry.Center.Y);
+                        }
+
+                        // light GC throttle for very large imports
+                        if ((++imported & 127) == 0)
+                        {
+                            GC.Collect();
+                            GC.WaitForPendingFinalizers();
+                        }
+                    }
+                }
+
+                Options.ChangedUltimaClass["Animations"] = true;
+                if (body == _currentSelect)
+                {
+                    CurrentSelect = CurrentSelect;   // this calls SetPicture() and repopulates frames
                 }
             }
         }
