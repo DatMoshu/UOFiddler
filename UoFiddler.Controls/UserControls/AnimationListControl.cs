@@ -1338,6 +1338,10 @@ namespace UoFiddler.Controls.UserControls
                 foreach (var kv in groups)
                 {
                     int dir = kv.Key;
+                    if (dir > 4)
+                    {
+                        continue;
+                    }
                     var framesList = kv.Value;
 
                     var animIdx = RequireAnimIdx(fileType, bodyTrans, action, dir);
