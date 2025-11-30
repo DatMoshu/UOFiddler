@@ -1604,28 +1604,6 @@ namespace UoFiddler.Controls.UserControls
             finally { src32.UnlockBits(data); }
         }
 
-
-        private class PackedOutput
-        {
-            [JsonPropertyName("meta")] public PackedMeta Meta { get; set; }
-            [JsonPropertyName("frames")] public List<PackedFrameEntry> Frames { get; set; }
-        }
-
-        private class PackedMeta
-        {
-            [JsonPropertyName("image")] public string Image { get; set; }
-            [JsonPropertyName("size")] public SizeStruct Size { get; set; }
-            [JsonPropertyName("format")] public string Format { get; set; }
-        }
-
-        private class PackedFrameEntry
-        {
-            [JsonPropertyName("direction")] public int Direction { get; set; }
-            [JsonPropertyName("index")] public int Index { get; set; }
-            [JsonPropertyName("frame")] public Rect Frame { get; set; }
-            [JsonPropertyName("center")] public PointStruct Center { get; set; }
-        }
-
         private string GetDirectionName(int dir)
         {
             switch (dir)
@@ -1642,25 +1620,7 @@ namespace UoFiddler.Controls.UserControls
             }
         }
 
-        private class Rect
-        {
-            [JsonPropertyName("x")] public int X { get; set; }
-            [JsonPropertyName("y")] public int Y { get; set; }
-            [JsonPropertyName("w")] public int W { get; set; }
-            [JsonPropertyName("h")] public int H { get; set; }
-        }
 
-        private class PointStruct
-        {
-            [JsonPropertyName("x")] public int X { get; set; }
-            [JsonPropertyName("y")] public int Y { get; set; }
-        }
-
-        private class SizeStruct
-        {
-            [JsonPropertyName("w")] public int W { get; set; }
-            [JsonPropertyName("h")] public int H { get; set; }
-        }
 
         private class AlphaSorter : IComparer
         {
@@ -1740,7 +1700,7 @@ namespace UoFiddler.Controls.UserControls
                 MinimizeBox = false;
                 StartPosition = FormStartPosition.CenterParent;
                 // increased size to accommodate taller direction list and wider right side
-                ClientSize = new Size(520, 460);
+                ClientSize = new Size(520, 490);
                 Padding = new Padding(10);
 
                 Label lbl = new Label { Text = "Directions:", Location = new Point(12, 12), AutoSize = true };
@@ -1826,11 +1786,11 @@ namespace UoFiddler.Controls.UserControls
                 Controls.Add(_exportAllCheckBox);
 
                 // make OK/Cancel taller and move to the right (anchored)
-                _ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(330, 400), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+                _ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(300, 400), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
                 _ok.Click += Ok_Click;
                 Controls.Add(_ok);
 
-                _cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(440, 400), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+                _cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(410, 400), Size = new Size(100, 40), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
                 Controls.Add(_cancel);
 
                 AcceptButton = _ok;
