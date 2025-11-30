@@ -1176,7 +1176,11 @@ namespace UoFiddler.Controls.UserControls
                 string json = JsonSerializer.Serialize(outObj, jsOptions);
                 File.WriteAllText(jsonFile, json);
 
-                var result = new List<string> { imageFile, jsonFile };
+                // Generate Debug Image
+                string debugImageFile = Path.Combine(outDir, $"{baseName}_guide.png");
+                AnimationDebugHelper.CreateDebugImage(debugImageFile, sprite, packedFrames);
+
+                var result = new List<string> { imageFile, jsonFile, debugImageFile };
 
                 if (oneRowPerDirection)
                 {
