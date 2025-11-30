@@ -9,14 +9,12 @@
  *
  ***************************************************************************/
 
-using System.Text.Json.Serialization;
-
 namespace UoFiddler.Controls.Classes
 {
-    public class PackedMeta
+    public class PackedItemEntry
     {
-        [JsonPropertyName("image")] public string Image { get; set; }
-        [JsonPropertyName("size")] public SizeStruct Size { get; set; }
-        [JsonPropertyName("format")] public string Format { get; set; }
+        public int Index { get; set; }
+        public Rect Frame { get; set; }
+        public PointStruct Center { get; set; }
     }
 }

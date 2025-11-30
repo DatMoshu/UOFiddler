@@ -39,7 +39,7 @@ namespace UoFiddler.Controls.UserControls
 
             public PackOptionsForm()
             {
-                Text = "Pack Options";
+                Text = "Pack Options - By Moshu";
                 FormBorderStyle = FormBorderStyle.FixedDialog;
                 MaximizeBox = false;
                 MinimizeBox = false;
